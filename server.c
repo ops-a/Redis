@@ -5,9 +5,15 @@
 #include<stdio.h>
 #include<stdlib.h>
 #include<sys/socket.h>
+#include<assert.h>
 #include<stdlib.h>
 
 void do_some(int);
+int32_t one_request(int);
+int32_t read_full(int, char*, size_t);
+int32_t write_full(int, char*, size_t);
+
+const size_t k_max_msg = 4096;
 
 int main(int argc, char* argv[]) {
     if(argc > 1) {
@@ -67,7 +73,12 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        do_some(connfd);
+        while(1) {
+            int32_t err = one_request(connfd);
+            if(err) {
+                break;
+            }
+        }
 
         close(connfd);
 
@@ -75,16 +86,70 @@ int main(int argc, char* argv[]) {
     return 0;
 }
 
-void do_some(int connfd) {
-    char rbuf[64] = {};
-    size_t n = read(connfd, &rbuf, sizeof(rbuf) - 1);
+int32_t  read_full(int fd, char* buf, size_t n) {
+    while(n > 0) {
+        int rv = read(fd, buf, n);
+        if(rv <= 0) {
+            return -1; // error
+        }
 
-    if(n < 0) {
-        perror("Error reading from connection.");
-        return;
+        assert((size_t)rv <= n);
+        n -= rv;
+        buf += rv;
     }
-    printf("client says %s\n", rbuf);
 
-    char wbuf[] = "world";
-    write(connfd, &wbuf, strlen(wbuf));
+    return 0;
+}
+
+int32_t write_all(int fd, char* buf, size_t n) {
+    while(n > 0) {
+        ssize_t rv = write(fd, buf, n);
+        if(rv <= 0) {
+            return -1;
+        }
+
+        assert((size_t)rv <= n);
+        n -= rv;
+        buf += rv;
+    }
+
+    return 0;
+}
+
+int32_t one_request(int connfd) {
+    char rbuf[4 + k_max_msg];
+    int errno = 0;
+
+    int32_t err = read_full(connfd, rbuf, 4);
+    if(err) {
+        perror(errno == 0 ? "EOF" : "read() error");
+        return err;
+    }
+
+    uint32_t len = 0;
+    memcpy(&len, rbuf, 4);
+    if(len > k_max_msg) {
+        perror("Message too long");
+        return -1;
+    }
+
+    // request body
+    err = read_full(connfd, &rbuf[4], len);
+    if(err) {
+        perror("read() error");
+        return err;
+    }
+
+    printf("client says: %.*s\n", len, &rbuf[4]);
+
+    // reply using the same protocol
+    const char reply[] = "world";
+    char wbuf[4 + sizeof(reply)];
+    len = (uint32_t) strlen(reply);
+    memcpy(wbuf, &len, 4);
+    memcpy(&wbuf[4], reply, len);
+
+    return write_all(connfd, wbuf, 4 + len);
+
+
 }
